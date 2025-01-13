@@ -10,7 +10,7 @@ from typing import Union, Dict, Any
 from threading import Thread, Event
 
 class RedisDataTester:
-    def __init__(self, host: str = 'localhost', port: int = 6379,
+    def __init__(self, host: str = 'localhost', port: int = 6379, 
                  use_ssl: bool = False, protocol: int = 2,
                  cluster_mode: bool = False):
         """Initialize Redis connection with specified parameters."""
@@ -22,7 +22,7 @@ class RedisDataTester:
                 'protocol': protocol,
                 'decode_responses': True
             }
-
+            
             if cluster_mode:
                 self.redis_client = RedisCluster(startup_nodes=[{'host': host, 'port': port}],
                                                decode_responses=True,
@@ -30,20 +30,20 @@ class RedisDataTester:
                                                protocol=protocol)
             else:
                 self.redis_client = redis.Redis(**connection_kwargs)
-
+            
             # Test connection
             self.redis_client.ping()
             print(f"Successfully connected to Redis at {host}:{port}")
-
+            
         except redis.ConnectionError as e:
             print(f"Failed to connect to Redis: {str(e)}")
             sys.exit(1)
-
+        
         self.test_key_prefix = "test:"
         self.pubsub_thread = None
         self.pubsub_ready = Event()
         self.received_messages = []
-
+    
     def flush_db(self):
         """Flush the current Redis database."""
         try:
@@ -68,7 +68,7 @@ class RedisDataTester:
             if isinstance(value['value'], set):
                 processed_value['value'] = list(value['value'])
                 processed_value['_type'] = 'set'
-            elif isinstance(value['value'], bytes):
+            elif isinstance(value['value'], bytes):                
                 processed_value['value'] = list(value['value'])
                 processed_value['_type'] = 'bytes'
             processed_data[key] = processed_value
@@ -95,10 +95,16 @@ class RedisDataTester:
         """Handle pub/sub message receiving in a separate thread."""
         for message in pubsub.listen():
             if message['type'] == 'message':
-                self.received_messages.append(message)
+                self.received_messages.append([message['channel'], message['data']])
                 if len(self.received_messages) == len(channels):
                     break
         self.pubsub_ready.set()
+
+    def _replay_pubsub_messages(self, channels, messages):
+        """Replay Pub/Sub messages during the verification phase."""
+        time.sleep(0.1)  # Short delay to ensure subscription readiness
+        for channel, message in zip(channels, messages):
+            self.redis_client.publish(channel, message)
 
     def save_reference_data(self, reference_data: Dict[str, Any], filename: str = 'reference_data.json'):
         """Save reference data to a file for later verification."""
@@ -120,34 +126,34 @@ class RedisDataTester:
         except Exception as e:
             print(f"Error loading reference data: {str(e)}")
             sys.exit(1)
-
+    
     def populate_data(self) -> Dict[str, Any]:
         """Populate Redis with different data types and return reference data."""
         reference_data = {}
-
+        
         try:
             # Flush DB before population
             self.flush_db()
-
+            
             # Basic Types
             # String
             string_key = self._generate_key("string")
             string_value = "Hello, Redis!"
             self.redis_client.set(string_key, string_value)
             reference_data['string'] = {'key': string_key, 'value': string_value}
-
+            
             # Integer
             int_key = self._generate_key("int")
             int_value = 42
             self.redis_client.set(int_key, int_value)
             reference_data['int'] = {'key': int_key, 'value': str(int_value)}
-
+            
             # List
             list_key = self._generate_key("list")
             list_value = ["item1", "item2", "item3"]
             self.redis_client.rpush(list_key, *list_value)
             reference_data['list'] = {'key': list_key, 'value': list_value}
-
+            
             # Set
             set_key = self._generate_key("set")
             set_value = {"member1", "member2", "member3"}
@@ -165,7 +171,7 @@ class RedisDataTester:
             zset_value = {"member1": 1.0, "member2": 2.0, "member3": 3.0}
             self.redis_client.zadd(zset_key, zset_value)
             reference_data['zset'] = {'key': zset_key, 'value': zset_value}
-
+            
             # Geospatial
             geo_key = self._generate_key("geo")
             geo_value = {
@@ -207,61 +213,61 @@ class RedisDataTester:
             pubsub = self.redis_client.pubsub()
             channels = ['channel1', 'channel2']
             messages = ['message1', 'message2']
-
+            
             # Start subscriber thread
             pubsub.subscribe(*channels)
             self.pubsub_thread = Thread(target=self._subscribe_handler, args=(pubsub, channels))
             self.pubsub_thread.daemon = True
             self.pubsub_thread.start()
-
+            
             # Wait a bit for subscription to be ready
             time.sleep(0.1)
-
+            
             # Publish messages
             for channel, message in zip(channels, messages):
                 self.redis_client.publish(channel, message)
-
+            
             # Wait for messages to be received
             self.pubsub_ready.wait(timeout=5.0)
             pubsub.unsubscribe()
-
+            
             reference_data['pubsub'] = {
                 'channels': channels,
                 'messages': messages,
-                'received': [(msg['channel'], msg['data']) for msg in self.received_messages]
+                'received': self.received_messages
             }
-
+            
             print("Successfully populated Redis with test data")
             self.save_reference_data(reference_data)
             return reference_data
-
+            
         except redis.RedisError as e:
             print(f"Error populating Redis data: {str(e)}")
             sys.exit(1)
-
+    
     def verify_data(self, reference_data: Dict[str, Any]) -> bool:
         """Verify that all populated data matches the reference data."""
         try:
             all_verified = True
-
+            
             # Verify String
             string_data = self.redis_client.get(reference_data['string']['key'])
             if string_data != reference_data['string']['value']:
                 print(f"String verification failed: {string_data} != {reference_data['string']['value']}")
                 all_verified = False
-
+            
             # Verify Integer
             int_data = self.redis_client.get(reference_data['int']['key'])
             if int_data != reference_data['int']['value']:
                 print(f"Integer verification failed: {int_data} != {reference_data['int']['value']}")
                 all_verified = False
-
+            
             # Verify List
             list_data = self.redis_client.lrange(reference_data['list']['key'], 0, -1)
             if list_data != reference_data['list']['value']:
                 print(f"List verification failed: {list_data} != {reference_data['list']['value']}")
                 all_verified = False
-
+            
             # Verify Set
             set_data = self.redis_client.smembers(reference_data['set']['key'])
             if set_data != reference_data['set']['value']:
@@ -280,7 +286,7 @@ class RedisDataTester:
             if zset_dict != reference_data['zset']['value']:
                 print(f"Sorted Set verification failed: {zset_dict} != {reference_data['zset']['value']}")
                 all_verified = False
-
+            
             # Verify Geospatial
             geo_key = reference_data['geo']['key']
             for city, coords in reference_data['geo']['value'].items():
@@ -313,11 +319,35 @@ class RedisDataTester:
                 print(f"Server response: {stream_entries}")
                 print(f"Expected: {expected_entries}")
                 all_verified = False
+            
+            # Verify Pub/Sub
+            if 'pubsub' in reference_data:
+                pubsub = self.redis_client.pubsub()
+                channels = reference_data['pubsub']['channels']
+                messages = reference_data['pubsub']['messages']
+
+                # Replay messages
+                replay_thread = Thread(target=self._replay_pubsub_messages, args=(channels, messages))
+                replay_thread.start()
+
+                # Subscribe and listen
+                pubsub.subscribe(*channels)
+                self.received_messages = []
+                for message in pubsub.listen():
+                    if message['type'] == 'message':
+                        self.received_messages.append([message['channel'], message['data']])
+                        if len(self.received_messages) == len(messages):
+                            break
+                pubsub.unsubscribe()
+
+                if self.received_messages != reference_data['pubsub']['received']:
+                    print(f"Pub/Sub verification failed: Server received = {self.received_messages}, Expected = {reference_data['pubsub']['received']}")
+                    all_verified = False
 
             if all_verified:
                 print("All data verified successfully")
             return all_verified
-
+            
         except redis.RedisError as e:
             print(f"Error verifying Redis data: {str(e)}")
             return False
@@ -327,10 +357,10 @@ def main():
     parser.add_argument('--host', default='localhost', help='Redis host')
     parser.add_argument('--port', type=int, default=6379, help='Redis port')
     parser.add_argument('--ssl', action='store_true', help='Use SSL/TLS connection')
-    parser.add_argument('--protocol', type=int, choices=[2, 3], default=2,
+    parser.add_argument('--protocol', type=int, choices=[2, 3], default=2, 
                        help='RESP protocol version (2 or 3)')
     parser.add_argument('--cluster', action='store_true', help='Use cluster mode')
-    parser.add_argument('--verify-only', action='store_true',
+    parser.add_argument('--verify-only', action='store_true', 
                        help='Run only verification using existing reference data')
     args = parser.parse_args()
 
@@ -351,10 +381,10 @@ def main():
     else:
         print("\n=== Starting Redis Data Type Test ===")
         reference_data = tester.populate_data()
-
+        
         print("\n=== Verifying Data ===")
         verification_success = tester.verify_data(reference_data)
-
+    
     if not verification_success:
         sys.exit(1)
 
